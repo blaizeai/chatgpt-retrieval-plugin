@@ -1,0 +1,44 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    environment:
+      # Optionnel: sécurise le WAL sur certains FS
+      - QDRANT__STORAGE__WAL__FSYNC=true
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  retrieval:
+    build: .
+    environment:
+      - DATASTORE=qdrant
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_DISTANCE=Cosine
+      - BEARER_TOKEN=dev-secret
+      # --- embeddings ---
+      - EMBEDDING_PROVIDER=bge
+      - EMBEDDING_MODEL=BAAI/bge-m3
+      - EMBEDDING_DEVICE=cpu
+      - EMBEDDING_DIMENSION=1024
+      - EMBEDDING_BATCH=64
+      - EMBEDDING_MAX_LEN=8192
+      # --- reranking ---
+      - RERANK_MODEL=BAAI/bge-reranker-v2-m3
+      - RERANK_DEVICE=cpu    # ou cuda:0
+      - RERANK_K=20
+      - RERANK_FINAL_N=6
+      - LOGURU_LEVEL=DEBUG
+      # Cache HF persistant (évite re-download des modèles)
+      - HF_HOME=/root/.cache/huggingface
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    ports:
+      - "8000:8000"
+    depends_on:
+      - qdrant
+
+volumes:
+  qdrant_data:
+  hf_cache:
