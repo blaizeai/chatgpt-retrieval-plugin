@@ -1,0 +1,81 @@
+Guide éclair des requêtes (RAG ↔ LLM)
+1) Ingestion
+
+PDF/DOCX/TXT via formulaire
+
+curl -s -X POST "http://localhost:8000/upsert-file" \
+  -H "Authorization: Bearer dev-secret" \
+  -F "file=@/chemin/vers/doc.pdf" | jq .
+
+
+JSON (plusieurs documents)
+
+curl -s -X POST "http://localhost:8000/upsert" \
+  -H "Authorization: Bearer dev-secret" -H "Content-Type: application/json" \
+  -d '{
+    "documents": [
+      {"text":"…contenu…","metadata":{"source":"file","document_id":"note1"}},
+      {"text":"…contenu…","metadata":{"source":"file","document_id":"note2"}}
+    ]
+  }' | jq .
+
+2) Recherche (avec rerank BGE actif côté serveur)
+
+Top-k large → rerank → top-N (par défaut N=6)
+
+curl -s -X POST "http://localhost:8000/query" \
+  -H "Authorization: Bearer dev-secret" -H "Content-Type: application/json" \
+  -d '{"queries":[{"query":"CECA et plan Schuman","top_k":20}]}' | jq .
+
+
+top_k: 20–50 est un bon range (le reranker recoupe à N=6).
+
+Ajustables via env : RERANK_K, RERANK_FINAL_N.
+
+(Option) Filtrer un document spécifique
+(si tu stockes document_id dans metadata)
+
+curl -s -X POST "http://localhost:8000/query" \
+  -H "Authorization: Bearer dev-secret" -H "Content-Type: application/json" \
+  -d '{
+    "queries":[
+      {"query":"Suez 1956", "top_k":30, "filter":{"document_id":"ce41d1a1-..."}}
+    ]
+  }' | jq .
+
+3) Préparer le “paquet RAG” pour le LLM
+
+Transformer la réponse /query en JSON prêt pour la synthèse :
+
+curl -s -X POST "http://localhost:8000/query" \
+  -H "Authorization: Bearer dev-secret" -H "Content-Type: application/json" \
+  -d '{"queries":[{"query":"CECA et plan Schuman","top_k":20}]}' \
+| jq '{query: .results[0].query,
+      contexts: (.results[0].results
+        | map({id, text, score, source:{document_id: .metadata.document_id}})),
+      instructions: "Réponds en français uniquement avec ces passages. Si l info manque, dis-le."}'
+
+
+Prompt LLM recommandé (résumé)
+
+System: “Tu es strictement grounded sur les contexts fournis. Si l’info n’y est pas, dis-le.”
+
+User: “Question: {{query}}. Passages numérotés: 1)… 2)… Tâche: 3–6 phrases, ajoute des citations [n°].”
+
+Sortie attendue (ex.) :
+
+{"answer":"…ta synthèse…","citations":["[1] docA","[3] docB"]}
+
+4) Maintenance
+
+Supprimer des points / collections
+
+curl -s -X DELETE "http://localhost:8000/delete" \
+  -H "Authorization: Bearer dev-secret" -H "Content-Type: application/json" \
+  -d '{"delete_all": true}' | jq .
+
+
+Vérifier Qdrant
+
+curl -s localhost:6333/collections/document_chunks | jq '.result.config.params.vectors'
+# attendu → {"size":1024,"distance":"Cosine"}
