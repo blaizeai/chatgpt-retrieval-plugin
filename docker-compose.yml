@@ -34,6 +34,7 @@ services:
       - HF_HOME=/root/.cache/huggingface
     volumes:
       - hf_cache:/root/.cache/huggingface
+      - ./uploads:/data/uploads
     ports:
       - "8000:8000"
     depends_on:
@@ -42,3 +43,4 @@ services:
 volumes:
   qdrant_data:
   hf_cache:
+  uploads:
