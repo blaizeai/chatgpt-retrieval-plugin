@@ -148,58 +148,55 @@ def create_document_chunks(
     # Return the list of chunks and the document id
     return doc_chunks, doc_id
 
-
 def get_document_chunks(
     documents: List[Document], chunk_token_size: Optional[int]
 ) -> Dict[str, List[DocumentChunk]]:
     """
     Convert a list of documents into a dictionary from document id to list of document chunks.
-
-    Args:
-        documents: The list of documents to convert.
-        chunk_token_size: The target size of each chunk in tokens, or None to use the default CHUNK_SIZE.
-
-    Returns:
-        A dictionary mapping each document id to a list of document chunks, each of which is a DocumentChunk object
-        with text, metadata, and embedding attributes.
     """
-    # Initialize an empty dictionary of lists of chunks
     chunks: Dict[str, List[DocumentChunk]] = {}
-
-    # Initialize an empty list of all chunks
     all_chunks: List[DocumentChunk] = []
 
-    # Loop over each document and create chunks
+    def _meta_set(cm, key, val):
+        if val in (None, ""):
+            return
+        # supporte dict OU pydantic model
+        if isinstance(cm, dict):
+            if cm.get(key) in (None, ""):
+                cm[key] = val
+        else:
+            if getattr(cm, key, None) in (None, ""):
+                setattr(cm, key, val)
+
     for doc in documents:
         doc_chunks, doc_id = create_document_chunks(doc, chunk_token_size)
 
-        # Append the chunks for this document to the list of all chunks
-        all_chunks.extend(doc_chunks)
+        # --- propagation des champs de niveau document vers chaque chunk ---
+        meta = getattr(doc, "metadata", None)
+        if meta:
+            sid = getattr(meta, "source_id", None)
+            url = getattr(meta, "url", None)
+            for ch in doc_chunks:
+                cm = getattr(ch, "metadata", None)
+                if not cm:
+                    continue
+                _meta_set(cm, "source_id", sid)
+                _meta_set(cm, "url", url)
+        # -------------------------------------------------------------------
 
-        # Add the list of chunks for this document to the dictionary with the document id as the key
+        all_chunks.extend(doc_chunks)
         chunks[doc_id] = doc_chunks
 
-    # Check if there are no chunks
     if not all_chunks:
         return {}
 
-    # Get all the embeddings for the document chunks in batches, using get_embeddings
     embeddings: List[List[float]] = []
     for i in range(0, len(all_chunks), EMBEDDINGS_BATCH_SIZE):
-        # Get the text of the chunks in the current batch
-        batch_texts = [
-            chunk.text for chunk in all_chunks[i : i + EMBEDDINGS_BATCH_SIZE]
-        ]
-
-        # Get the embeddings for the batch texts
+        batch_texts = [chunk.text for chunk in all_chunks[i : i + EMBEDDINGS_BATCH_SIZE]]
         batch_embeddings = get_embeddings(batch_texts)
-
-        # Append the batch embeddings to the embeddings list
         embeddings.extend(batch_embeddings)
 
-    # Update the document chunk objects with the embeddings
     for i, chunk in enumerate(all_chunks):
-        # Assign the embedding from the embeddings list to the chunk object
         chunk.embedding = embeddings[i]
 
     return chunks

@@ -1,117 +1,114 @@
+# services/file.py
 import os
-from io import BufferedReader
-from typing import Optional
-from fastapi import UploadFile
+import time
 import mimetypes
+from pathlib import Path
+from typing import Optional
+
+from fastapi import UploadFile
+from loguru import logger
 from PyPDF2 import PdfReader
 import docx2txt
 import csv
-import pptx
-from loguru import logger
+import pptx  # python-pptx
 
-from models.models import Document, DocumentMetadata
+from models.models import Document, DocumentMetadata, Source
+
+# Dossier persistant (monte-le dans docker-compose : volumes: - uploads:/data/uploads)
+UPLOAD_DIR = Path("/data/uploads")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
-async def get_document_from_file(
-    file: UploadFile, metadata: DocumentMetadata
-) -> Document:
-    extracted_text = await extract_text_from_form_file(file)
+def _safe_filename(name: str) -> str:
+    # petite sanitation sans dépendre de werkzeug
+    name = name or "upload"
+    name = name.replace("\\", "/").split("/")[-1]
+    keep = "._-() "
+    sanitized = "".join(ch for ch in name if ch.isalnum() or ch in keep)
+    return sanitized or f"file_{int(time.time())}"
 
-    doc = Document(text=extracted_text, metadata=metadata)
 
-    return doc
+def _guess_mimetype(path: str, provided: Optional[str]) -> str:
+    if provided:
+        return provided
+    mt, _ = mimetypes.guess_type(path)
+    if mt:
+        return mt
+    if path.endswith(".md"):
+        return "text/markdown"
+    raise ValueError("Unsupported file type (cannot guess mimetype)")
 
 
 def extract_text_from_filepath(filepath: str, mimetype: Optional[str] = None) -> str:
-    """Return the text content of a file given its filepath."""
+    """Retourne le texte du fichier à partir de son chemin."""
+    mt = _guess_mimetype(filepath, mimetype)
+    logger.info(f"extract_text_from_filepath: {filepath} ({mt})")
 
-    if mimetype is None:
-        # Get the mimetype of the file based on its extension
-        mimetype, _ = mimetypes.guess_type(filepath)
+    if mt == "application/pdf":
+        reader = PdfReader(filepath)
+        texts = []
+        for page in reader.pages:
+            try:
+                texts.append(page.extract_text() or "")
+            except Exception:
+                pass
+        return " ".join(texts)
 
-    if not mimetype:
-        if filepath.endswith(".md"):
-            mimetype = "text/markdown"
-        else:
-            raise Exception("Unsupported file type")
+    if mt in ("text/plain", "text/markdown"):
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
 
-    try:
-        with open(filepath, "rb") as file:
-            extracted_text = extract_text_from_file(file, mimetype)
-    except Exception as e:
-        logger.error(e)
-        raise e
+    if mt == "text/csv":
+        out = []
+        with open(filepath, "r", encoding="utf-8", errors="ignore", newline="") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                out.append(" ".join(row))
+        return "\n".join(out)
 
-    return extracted_text
+    if mt == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        return docx2txt.process(filepath) or ""
 
-
-def extract_text_from_file(file: BufferedReader, mimetype: str) -> str:
-    if mimetype == "application/pdf":
-        # Extract text from pdf using PyPDF2
-        reader = PdfReader(file)
-        extracted_text = " ".join([page.extract_text() for page in reader.pages])
-    elif mimetype == "text/plain" or mimetype == "text/markdown":
-        # Read text from plain text file
-        extracted_text = file.read().decode("utf-8")
-    elif (
-        mimetype
-        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ):
-        # Extract text from docx using docx2txt
-        extracted_text = docx2txt.process(file)
-    elif mimetype == "text/csv":
-        # Extract text from csv using csv module
-        extracted_text = ""
-        decoded_buffer = (line.decode("utf-8") for line in file)
-        reader = csv.reader(decoded_buffer)
-        for row in reader:
-            extracted_text += " ".join(row) + "\n"
-    elif (
-        mimetype
-        == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    ):
-        # Extract text from pptx using python-pptx
-        extracted_text = ""
-        presentation = pptx.Presentation(file)
-        for slide in presentation.slides:
+    if mt == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+        text = []
+        prs = pptx.Presentation(filepath)
+        for slide in prs.slides:
             for shape in slide.shapes:
-                if shape.has_text_frame:
-                    for paragraph in shape.text_frame.paragraphs:
-                        for run in paragraph.runs:
-                            extracted_text += run.text + " "
-                    extracted_text += "\n"
-    else:
-        # Unsupported file type
-        raise ValueError("Unsupported file type: {}".format(mimetype))
+                if hasattr(shape, "has_text_frame") and shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        text.append(" ".join(run.text or "" for run in para.runs))
+        return "\n".join(text)
 
-    return extracted_text
+    raise ValueError(f"Unsupported file type: {mt}")
 
 
-# Extract text from a file based on its mimetype
-async def extract_text_from_form_file(file: UploadFile):
-    """Return the text content of a file."""
-    # get the file body from the upload file object
-    mimetype = file.content_type
-    logger.info(f"mimetype: {mimetype}")
-    logger.info(f"file.file: {file.file}")
-    logger.info("file: ", file)
+async def get_document_from_file(file: UploadFile, metadata: DocumentMetadata) -> Document:
+    """Sauvegarde le fichier, renseigne metadata (url/source_id), puis extrait le texte."""
 
-    file_stream = await file.read()
+    # 1) Sauvegarde le flux reçu une seule fois
+    orig_name = _safe_filename(file.filename or "upload")
+    stamp = int(time.time())
+    dst = UPLOAD_DIR / f"{stamp}_{orig_name}"
 
-    temp_file_path = "/tmp/temp_file"
+    blob = await file.read()
+    with open(dst, "wb") as out:
+        out.write(blob)
 
-    # write the file to a temporary location
-    with open(temp_file_path, "wb") as f:
-        f.write(file_stream)
+    # 2) Métadonnées (utiliser source_id au lieu de document_id)
+    if metadata is None:
+        metadata = DocumentMetadata(source=Source.file)
+    if getattr(metadata, "source", None) is None:
+        metadata.source = Source.file
+    if not getattr(metadata, "url", None):
+        metadata.url = f"file://{dst}"
+    if not getattr(metadata, "source_id", None):
+        metadata.source_id = dst.name  # <<— identifiant de fichier
 
+    # 3) Extraction texte depuis le fichier sauvegardé
     try:
-        extracted_text = extract_text_from_filepath(temp_file_path, mimetype)
+        extracted_text = extract_text_from_filepath(str(dst), file.content_type)
     except Exception as e:
-        logger.error(e)
-        os.remove(temp_file_path)
-        raise e
+        logger.error(f"extract_text failed for {dst}: {e}")
+        raise
 
-    # remove file from temp location
-    os.remove(temp_file_path)
-
-    return extracted_text
+    return Document(text=extracted_text, metadata=metadata)

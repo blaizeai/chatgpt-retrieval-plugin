@@ -49,12 +49,7 @@ def _safe_text(x: Any) -> str:
     t = _get_attr(x, "text", "")
     return t or ""
 
-
 def _maybe_rerank(blocks: List[Any]) -> List[Any]:
-    """
-    blocks: liste d'éléments {'query': str, 'results': [...]}
-    Re-classe chaque bloc avec le reranker si activé, SANS modifier les objets Pydantic.
-    """
     if not RERANK_ENABLE:
         return blocks
 
@@ -66,22 +61,27 @@ def _maybe_rerank(blocks: List[Any]) -> List[Any]:
                 continue
 
             K = min(RERANK_K, len(items))
-            cand = items[:K]  # ne pas modifier les objets
+            cand = items[:K]
 
             scores = rerank(user_query, [_safe_text(x) for x in cand])  # List[float]
-            scores = rerank(user_query, [_safe_text(x) for x in cand])  # List[float]
 
-            # --- LOG DEBUG : id + score index + score rerank ---
+            # --- logs debug sûrs ---
             try:
                 before = ", ".join(f"{_get_attr(x,'id','?')}:{_get_attr(x,'score',0):.3f}" for x in cand)
-                after = ", ".join(f"{_get_attr(x,'id','?')}:{s:.3f}" for s, x in sorted(zip(scores, cand), key=lambda p: p[0], reverse=True))
-                logger.debug(f"[RERANK] query={user_query!r} K={len(cand)} before=[{before}] after=[{after}]")
+                logger.debug(f"[RERANK] query={user_query!r} K={len(cand)} before=[{before}]")
             except Exception:
                 pass
 
-            # Trie par score de rerank décroissant, sans modifier les objets
-            ranked = [it for it, _ in sorted(zip(cand, scores), key=lambda p: p[0], reverse=True)]
+            # tri stable: clé = (score, index) pour éviter toute comparaison d'objets
+            order = sorted(range(len(cand)), key=lambda i: (scores[i], i), reverse=True)
+            ranked = [cand[i] for i in order]
             final = ranked[:max(1, min(RERANK_FINAL_N, len(ranked)))]
+
+            try:
+                after = ", ".join(f"{_get_attr(cand[i],'id','?')}:{scores[i]:.3f}" for i in order)
+                logger.debug(f"[RERANK] after=[{after}] -> kept={len(final)}")
+            except Exception:
+                pass
 
             if isinstance(qr, dict):
                 qr["results"] = final
@@ -92,7 +92,6 @@ def _maybe_rerank(blocks: List[Any]) -> List[Any]:
     except Exception as e:
         logger.warning(f"Rerank disabled due to error: {e}")
         return blocks
-
 
 app = FastAPI(dependencies=[Depends(validate_token)])
 app.mount("/.well-known", StaticFiles(directory=".well-known"), name="static")
