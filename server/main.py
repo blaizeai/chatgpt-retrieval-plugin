@@ -33,9 +33,11 @@ def validate_token(credentials: HTTPAuthorizationCredentials = Depends(bearer_sc
 
 
 # --- Rerank config ---
+# ⚡ Optimisations: Réduit RERANK_K de 20 à 5 et RERANK_FINAL_N de 6 à 3
+# Côté Rust on demande top_k=5, donc pas besoin de reranker 20 chunks
 RERANK_ENABLE = os.getenv("RERANK_ENABLE", "true").lower() == "true"
-RERANK_K = int(os.getenv("RERANK_K", "20"))            # candidats à reclasser
-RERANK_FINAL_N = int(os.getenv("RERANK_FINAL_N", "6"))  # résultats conservés après rerank
+RERANK_K = int(os.getenv("RERANK_K", "5"))             # ⚡ Réduit de 20 à 5
+RERANK_FINAL_N = int(os.getenv("RERANK_FINAL_N", "3"))  # ⚡ Réduit de 6 à 3
 
 
 def _get_attr(obj: Any, name: str, default=None):
@@ -68,7 +70,7 @@ def _maybe_rerank(blocks: List[Any]) -> List[Any]:
             K = min(RERANK_K, len(items))
             cand = items[:K]  # ne pas modifier les objets
 
-            scores = rerank(user_query, [_safe_text(x) for x in cand])  # List[float]
+            # ⚡ FIX: Appel rerank() une seule fois au lieu de 2 (bug de duplication)
             scores = rerank(user_query, [_safe_text(x) for x in cand])  # List[float]
 
             # --- LOG DEBUG : id + score index + score rerank ---

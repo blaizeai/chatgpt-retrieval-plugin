@@ -16,7 +16,7 @@ services:
       - DATASTORE=qdrant
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_DISTANCE=Cosine
-      - BEARER_TOKEN=dev-secret
+      - BEARER_TOKEN=${RAG_BEARER_TOKEN:-dev-secret}
       # --- embeddings ---
       - EMBEDDING_PROVIDER=bge
       - EMBEDDING_MODEL=BAAI/bge-m3
@@ -27,8 +27,9 @@ services:
       # --- reranking ---
       - RERANK_MODEL=BAAI/bge-reranker-v2-m3
       - RERANK_DEVICE=cpu    # ou cuda:0
-      - RERANK_K=20
-      - RERANK_FINAL_N=6
+      - RERANK_K=5           # ⚡ Réduit de 20 à 5 pour performance
+      - RERANK_FINAL_N=3     # ⚡ Réduit de 6 à 3 pour performance
+      - EMBEDDING_CACHE_SIZE=1000  # ⚡ Nouveau: cache LRU
       - LOGURU_LEVEL=DEBUG
       # Cache HF persistant (évite re-download des modèles)
       - HF_HOME=/root/.cache/huggingface

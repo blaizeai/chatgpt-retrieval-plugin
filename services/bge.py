@@ -2,6 +2,8 @@
 import os
 from typing import List
 import numpy as np
+from functools import lru_cache
+import hashlib
 
 try:
     from FlagEmbedding import BGEM3FlagModel
@@ -14,6 +16,8 @@ DEFAULT_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 DEFAULT_DEVICE = os.getenv("EMBEDDING_DEVICE", "cpu")  # "cpu" | "cuda:0"
 DEFAULT_BATCH = int(os.getenv("EMBEDDING_BATCH", "64"))
 DEFAULT_MAX_LEN = int(os.getenv("EMBEDDING_MAX_LEN", "8192"))
+# ⚡ Cache LRU pour les queries (souvent répétées)
+CACHE_SIZE = int(os.getenv("EMBEDDING_CACHE_SIZE", "1000"))
 
 _model = None
 
@@ -54,5 +58,15 @@ def _encode(texts: List[str]) -> List[List[float]]:
 def embed_documents(texts: List[str]) -> List[List[float]]:
     return _encode(texts)
 
+# ⚡ Cache LRU pour les queries (hashé car lru_cache nécessite des args hashable)
+@lru_cache(maxsize=CACHE_SIZE)
+def _cached_embed_query(text_hash: str, text: str) -> tuple:
+    """Helper cacheable qui retourne un tuple (pour être hashable)"""
+    vec = _encode([text])[0]
+    return tuple(vec)  # tuple est hashable pour lru_cache
+
 def embed_query(text: str) -> List[float]:
-    return _encode([text])[0]
+    """Embed une query avec cache LRU"""
+    text_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]  # Hash court
+    cached_tuple = _cached_embed_query(text_hash, text)
+    return list(cached_tuple)  # Convertir tuple -> list pour compatibilité
