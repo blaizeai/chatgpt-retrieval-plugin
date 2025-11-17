@@ -127,6 +127,22 @@ async def upsert_file(
     except Exception:
         metadata_obj = DocumentMetadata(source=Source.file)
 
+    # Add filename to metadata if not already present
+    if not metadata_obj.filename and file.filename:
+        metadata_obj.filename = file.filename
+
+    # Add file size
+    if not metadata_obj.filesize:
+        content = await file.read()
+        metadata_obj.filesize = len(content)
+        # Reset file pointer to beginning
+        await file.seek(0)
+
+    # Add creation date
+    if not metadata_obj.created_at:
+        from datetime import datetime
+        metadata_obj.created_at = datetime.utcnow().isoformat() + "Z"
+
     document = await get_document_from_file(file, metadata_obj)
 
     try:
