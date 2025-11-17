@@ -1,81 +1,494 @@
-Guide éclair des requêtes (RAG ↔ LLM)
-1) Ingestion
+================================================================================
+                    RETRIEVAL PLUGIN - API ROUTES GUIDE
+================================================================================
 
-PDF/DOCX/TXT via formulaire
+🔐 AUTHENTICATION
+All routes require: Authorization: Bearer <BEARER_TOKEN>
+(defined in .env file)
 
-curl -s -X POST "http://localhost:8000/upsert-file" \
+================================================================================
+📋 ROUTES OVERVIEW
+================================================================================
+
+1. POST   /upsert-file    - Upload single file (PDF, DOCX, TXT, PPTX, MD)
+2. POST   /upsert         - Upload multiple documents (JSON)
+3. POST   /query          - Semantic search with optional reranking
+4. POST   /list           - List all uploaded documents with metadata
+5. POST   /sub/query      - Same as /query (sub-app for ChatGPT plugins)
+6. DELETE /delete         - Delete documents by ID, filter, or all
+7. GET    /.well-known/*  - Static files (OpenAPI, manifest, logo)
+
+================================================================================
+📤 1. UPLOAD FILE - POST /upsert-file
+================================================================================
+
+Upload and index a single file.
+
+Supported formats: PDF, DOCX, TXT, PPTX, MD
+
+Example:
+--------
+curl -X POST "http://localhost:8000/upsert-file" \
   -H "Authorization: Bearer dev-secret" \
-  -F "file=@/chemin/vers/doc.pdf" | jq .
+  -F "file=@document.pdf" \
+  -F 'metadata={"source":"file","author":"Alice"}'
 
+Response:
+---------
+{
+  "ids": ["generated-uuid-1"]
+}
 
-JSON (plusieurs documents)
+Notes:
+- File is chunked into ~200 token pieces
+- Each chunk gets a unique ID
+- Metadata is optional (defaults to {"source":"file"})
 
-curl -s -X POST "http://localhost:8000/upsert" \
-  -H "Authorization: Bearer dev-secret" -H "Content-Type: application/json" \
+================================================================================
+📤 2. UPLOAD DOCUMENTS - POST /upsert
+================================================================================
+
+Upload and index multiple documents in JSON format.
+
+Body structure:
+---------------
+{
+  "documents": [
+    {
+      "text": "Document content here...",
+      "metadata": {
+        "source": "file",           // "file", "email", or "chat"
+        "author": "Alice",           // optional
+        "created_at": "2025-01-15",  // optional (ISO format)
+        "source_id": "external-id",  // optional
+        "url": "https://..."         // optional
+      }
+    },
+    {
+      "text": "Another document...",
+      "metadata": {"source": "email"}
+    }
+  ]
+}
+
+Example:
+--------
+curl -X POST "http://localhost:8000/upsert" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
   -d '{
     "documents": [
-      {"text":"…contenu…","metadata":{"source":"file","document_id":"note1"}},
-      {"text":"…contenu…","metadata":{"source":"file","document_id":"note2"}}
+      {"text":"Le plan Schuman...","metadata":{"source":"file","author":"Bob"}},
+      {"text":"La CECA...","metadata":{"source":"file"}}
     ]
   }' | jq .
 
-2) Recherche (avec rerank BGE actif côté serveur)
+Response:
+---------
+{
+  "ids": ["uuid-1", "uuid-2"]
+}
 
-Top-k large → rerank → top-N (par défaut N=6)
+Notes:
+- Documents are automatically chunked
+- Each document can have different metadata
+- If document with same ID exists, it's replaced
 
-curl -s -X POST "http://localhost:8000/query" \
-  -H "Authorization: Bearer dev-secret" -H "Content-Type: application/json" \
-  -d '{"queries":[{"query":"CECA et plan Schuman","top_k":20}]}' | jq .
+================================================================================
+🔍 3. SEARCH DOCUMENTS - POST /query
+================================================================================
 
+Semantic search using natural language queries.
 
-top_k: 20–50 est un bon range (le reranker recoupe à N=6).
+Body structure:
+---------------
+{
+  "queries": [
+    {
+      "query": "What is the Schuman Plan?",  // required
+      "top_k": 5,                             // optional (default: 3)
+      "filter": {                             // optional
+        "document_id": "uuid",                // filter by document
+        "source": "file",                     // "file", "email", or "chat"
+        "author": "Alice",                    // filter by author
+        "source_id": "external-id",           // filter by source ID
+        "start_date": "2025-01-01",           // ISO format
+        "end_date": "2025-12-31"              // ISO format
+      }
+    }
+  ]
+}
 
-Ajustables via env : RERANK_K, RERANK_FINAL_N.
+Example - Basic search:
+-----------------------
+curl -X POST "http://localhost:8000/query" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"queries":[{"query":"Qu est-ce que le plan Schuman?","top_k":5}]}' | jq .
 
-(Option) Filtrer un document spécifique
-(si tu stockes document_id dans metadata)
-
-curl -s -X POST "http://localhost:8000/query" \
-  -H "Authorization: Bearer dev-secret" -H "Content-Type: application/json" \
+Example - Search with filter:
+------------------------------
+curl -X POST "http://localhost:8000/query" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
   -d '{
-    "queries":[
-      {"query":"Suez 1956", "top_k":30, "filter":{"document_id":"ce41d1a1-..."}}
-    ]
+    "queries":[{
+      "query":"Suez crisis 1956",
+      "top_k":10,
+      "filter":{"author":"Alice","source":"file"}
+    }]
   }' | jq .
 
-3) Préparer le “paquet RAG” pour le LLM
+Response:
+---------
+{
+  "results": [
+    {
+      "query": "What is the Schuman Plan?",
+      "results": [
+        {
+          "id": "chunk-uuid-1",
+          "text": "The Schuman Plan was proposed...",
+          "score": 0.92,
+          "metadata": {
+            "document_id": "doc-uuid",
+            "source": "file",
+            "author": "Alice",
+            "created_at": "2025-01-15"
+          }
+        },
+        {
+          "id": "chunk-uuid-2",
+          "text": "Robert Schuman in 1950...",
+          "score": 0.87,
+          "metadata": {
+            "document_id": "doc-uuid",
+            "source": "file"
+          }
+        }
+      ]
+    }
+  ]
+}
 
-Transformer la réponse /query en JSON prêt pour la synthèse :
+Reranking behavior (RERANK_ENABLE=true):
+-----------------------------------------
+1. Vector DB returns top_k results (e.g., 20)
+2. BGE reranker scores top RERANK_K candidates (default: 5)
+3. Results sorted by rerank score (not original vector score)
+4. Top RERANK_FINAL_N returned (default: 3)
 
-curl -s -X POST "http://localhost:8000/query" \
-  -H "Authorization: Bearer dev-secret" -H "Content-Type: application/json" \
-  -d '{"queries":[{"query":"CECA et plan Schuman","top_k":20}]}' \
-| jq '{query: .results[0].query,
-      contexts: (.results[0].results
-        | map({id, text, score, source:{document_id: .metadata.document_id}})),
-      instructions: "Réponds en français uniquement avec ces passages. Si l info manque, dis-le."}'
+Environment variables:
+----------------------
+RERANK_ENABLE=true       # Enable/disable reranking
+RERANK_K=5               # Number of candidates to rerank
+RERANK_FINAL_N=3         # Final number of results
 
+Notes:
+- Score is float 0.0-1.0 (higher = more relevant)
+- Results are sorted by score (descending)
+- Multiple queries can be sent in one request
+- Embeddings generated automatically (BGE-M3 or OpenAI)
 
-Prompt LLM recommandé (résumé)
+================================================================================
+📋 4. LIST DOCUMENTS - POST /list
+================================================================================
 
-System: “Tu es strictement grounded sur les contexts fournis. Si l’info n’y est pas, dis-le.”
+List all uploaded documents with their metadata and chunk information.
 
-User: “Question: {{query}}. Passages numérotés: 1)… 2)… Tâche: 3–6 phrases, ajoute des citations [n°].”
+Body structure:
+---------------
+{
+  "limit": 100,          // optional (default: 100, max results per page)
+  "offset": 0,           // optional (default: 0, for pagination)
+  "filter": {            // optional (same filters as /query)
+    "source": "file",
+    "author": "Alice"
+  }
+}
 
-Sortie attendue (ex.) :
+Example - List all documents:
+-----------------------------
+curl -X POST "http://localhost:8000/list" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"limit":100,"offset":0}' | jq .
 
-{"answer":"…ta synthèse…","citations":["[1] docA","[3] docB"]}
+Example - List with pagination:
+--------------------------------
+# First page (documents 0-99)
+curl -X POST "http://localhost:8000/list" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"limit":100,"offset":0}' | jq .
 
-4) Maintenance
+# Second page (documents 100-199)
+curl -X POST "http://localhost:8000/list" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"limit":100,"offset":100}' | jq .
 
-Supprimer des points / collections
+Example - List with filter:
+----------------------------
+curl -X POST "http://localhost:8000/list" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"limit":50,"filter":{"source":"file","author":"Alice"}}' | jq .
 
-curl -s -X DELETE "http://localhost:8000/delete" \
-  -H "Authorization: Bearer dev-secret" -H "Content-Type: application/json" \
-  -d '{"delete_all": true}' | jq .
+Response:
+---------
+{
+  "documents": [
+    {
+      "document_id": "uuid-1",
+      "chunk_count": 5,
+      "metadata": {
+        "source": "file",
+        "author": "Alice",
+        "created_at": "2025-01-15T10:30:00Z",
+        "source_id": null,
+        "url": null
+      },
+      "sample_text": "This is a preview of the first chunk (up to 200 chars)..."
+    },
+    {
+      "document_id": "uuid-2",
+      "chunk_count": 3,
+      "metadata": {
+        "source": "file",
+        "author": "Bob",
+        "created_at": "2025-01-16T14:20:00Z"
+      },
+      "sample_text": "Another document preview..."
+    }
+  ],
+  "total": 42
+}
 
+Notes:
+- Returns aggregated info per document (not individual chunks)
+- chunk_count shows how many chunks each document was split into
+- sample_text is first chunk preview (max 200 chars)
+- total shows total number of documents matching the filter
+- Use limit/offset for pagination
+- Filters work the same as in /query endpoint
 
-Vérifier Qdrant
+================================================================================
+🗑️  5. DELETE DOCUMENTS - DELETE /delete
+================================================================================
 
-curl -s localhost:6333/collections/document_chunks | jq '.result.config.params.vectors'
-# attendu → {"size":1024,"distance":"Cosine"}
+Delete documents by ID, filter, or delete all.
+
+Body structure (at least one parameter required):
+--------------------------------------------------
+{
+  "ids": ["uuid-1", "uuid-2"],     // optional: delete specific IDs
+  "filter": {                       // optional: delete by metadata
+    "document_id": "doc-uuid",
+    "source": "file",
+    "author": "Alice"
+  },
+  "delete_all": false               // optional: delete everything (use with caution!)
+}
+
+Example - Delete by IDs:
+------------------------
+curl -X DELETE "http://localhost:8000/delete" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"ids":["uuid-1","uuid-2"]}' | jq .
+
+Example - Delete by filter:
+----------------------------
+curl -X DELETE "http://localhost:8000/delete" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"filter":{"source":"email"}}' | jq .
+
+Example - Delete by document_id:
+---------------------------------
+curl -X DELETE "http://localhost:8000/delete" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"filter":{"document_id":"doc-uuid"}}' | jq .
+
+Example - Delete all (DANGER):
+-------------------------------
+curl -X DELETE "http://localhost:8000/delete" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"delete_all":true}' | jq .
+
+Response:
+---------
+{
+  "success": true
+}
+
+Notes:
+- When deleting by ID, all chunks of that document are removed
+- Filters can be combined (e.g., source AND author)
+- delete_all=true removes EVERYTHING (use carefully!)
+
+================================================================================
+📚 6. STATIC FILES - GET /.well-known/*
+================================================================================
+
+Serves configuration files for ChatGPT plugins.
+
+Available files:
+----------------
+GET /.well-known/openapi.yaml    - OpenAPI schema
+GET /.well-known/ai-plugin.json  - ChatGPT plugin manifest
+GET /.well-known/logo.png        - Plugin logo
+
+Example:
+--------
+curl http://localhost:8000/.well-known/openapi.yaml
+
+Notes:
+- No authentication required for these files
+- Used for ChatGPT plugin registration
+
+================================================================================
+🧪 INTERACTIVE DOCUMENTATION
+================================================================================
+
+Once server is running, access:
+
+Swagger UI:       http://localhost:8000/docs
+ReDoc:            http://localhost:8000/redoc
+OpenAPI JSON:     http://localhost:8000/openapi.json
+Sub-app OpenAPI:  http://localhost:8000/sub/openapi.json
+
+================================================================================
+🚀 QUICK START EXAMPLES
+================================================================================
+
+# 1. Upload a document
+curl -X POST "http://localhost:8000/upsert" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"documents":[{"text":"Paris is the capital of France.","metadata":{"source":"file"}}]}'
+
+# 2. Search
+curl -X POST "http://localhost:8000/query" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"queries":[{"query":"What is the capital of France?","top_k":3}]}' | jq .
+
+# 3. Upload file
+curl -X POST "http://localhost:8000/upsert-file" \
+  -H "Authorization: Bearer dev-secret" \
+  -F "file=@document.pdf"
+
+# 4. Search with filter
+curl -X POST "http://localhost:8000/query" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"queries":[{"query":"history","top_k":5,"filter":{"source":"file"}}]}' | jq .
+
+# 5. List all documents
+curl -X POST "http://localhost:8000/list" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"limit":10}' | jq .
+
+# 6. Delete by source
+curl -X DELETE "http://localhost:8000/delete" \
+  -H "Authorization: Bearer dev-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"filter":{"source":"email"}}'
+
+================================================================================
+🔧 METADATA FIELDS REFERENCE
+================================================================================
+
+DocumentMetadata:
+-----------------
+source        : "file" | "email" | "chat"  (optional)
+source_id     : string                      (optional, external ID)
+url           : string                      (optional)
+created_at    : string                      (optional, ISO 8601 format)
+author        : string                      (optional)
+
+DocumentMetadataFilter (for queries and deletes):
+--------------------------------------------------
+document_id   : string                      (UUID of document)
+source        : "file" | "email" | "chat"
+source_id     : string
+author        : string
+start_date    : string                      (ISO 8601 format)
+end_date      : string                      (ISO 8601 format)
+
+================================================================================
+⚙️  CONFIGURATION (Environment Variables)
+================================================================================
+
+Required:
+---------
+DATASTORE=qdrant                # Vector database provider
+BEARER_TOKEN=your-secret        # API authentication token
+
+Embeddings (BGE Local - Recommended):
+--------------------------------------
+EMBEDDING_SERVICE=bge           # Use local BGE (default)
+EMBEDDING_MODEL=BAAI/bge-m3     # HuggingFace model
+EMBEDDING_DEVICE=mps            # mps, cuda:0, or cpu (auto-detected)
+EMBEDDING_BATCH=32              # Batch size
+EMBEDDING_CACHE_SIZE=2000       # LRU cache size
+
+Embeddings (OpenAI API - Alternative):
+---------------------------------------
+EMBEDDING_SERVICE=openai        # Use OpenAI API
+OPENAI_API_KEY=sk-...
+EMBEDDING_MODEL=text-embedding-3-large
+EMBEDDING_DIMENSION=256
+
+Reranking:
+----------
+RERANK_ENABLE=true              # Enable BGE reranker
+RERANK_K=5                      # Candidates to rerank
+RERANK_FINAL_N=3                # Final results to return
+RERANK_DEVICE=mps               # mps, cuda:0, or cpu (auto-detected)
+
+Vector Database (Qdrant example):
+----------------------------------
+QDRANT_URL=http://localhost:6333
+QDRANT_COLLECTION=document_chunks
+
+================================================================================
+🐛 TROUBLESHOOTING
+================================================================================
+
+# Check server health
+curl http://localhost:8000/docs
+
+# Verify Qdrant is running (if using Qdrant)
+curl http://localhost:6333/collections/document_chunks
+
+# Check if GPU acceleration is active
+python quick_test.py
+# Should show: "✅ Mac Silicon MPS acceleration ACTIVE" or similar
+
+# View server logs
+poetry run start
+# Look for: "🚀 [BGE] Auto-detected Mac Silicon - using MPS acceleration"
+
+# Test authentication
+curl -X POST "http://localhost:8000/query" \
+  -H "Authorization: Bearer wrong-token" \
+  -H "Content-Type: application/json" \
+  -d '{"queries":[{"query":"test"}]}'
+# Should return 401 Unauthorized
+
+================================================================================
+📖 MORE INFORMATION
+================================================================================
+
+- Full documentation: README.md
+- Architecture guide: CLAUDE.md
+- Optimization guide: OPTIMIZATIONS_SUMMARY.md
+- Provider setup: docs/providers/<datastore_name>/setup.md
+
+================================================================================

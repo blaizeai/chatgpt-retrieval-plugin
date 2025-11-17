@@ -15,6 +15,9 @@ from models.api import (
     QueryResponse,
     UpsertRequest,
     UpsertResponse,
+    ListDocumentsRequest,
+    ListDocumentsResponse,
+    DocumentInfo,
 )
 from datastore.factory import get_datastore
 from services.file import get_document_from_file
@@ -184,6 +187,36 @@ async def delete(request: DeleteRequest = Body(...)):
             delete_all=request.delete_all,
         )
         return DeleteResponse(success=success)
+    except Exception as e:
+        logger.error(e)
+        raise HTTPException(status_code=500, detail="Internal Service Error")
+
+
+@app.post("/list", response_model=ListDocumentsResponse)
+async def list_documents(request: ListDocumentsRequest = Body(...)):
+    """
+    List all documents with their metadata, chunk count, and sample text.
+    Supports pagination and filtering.
+    """
+    try:
+        documents_data, total = await datastore.list_documents(
+            limit=request.limit or 100,
+            offset=request.offset or 0,
+            filter=request.filter,
+        )
+
+        # Convert to DocumentInfo objects
+        documents = [
+            DocumentInfo(
+                document_id=doc["document_id"],
+                chunk_count=doc["chunk_count"],
+                metadata=DocumentMetadata(**doc["metadata"]),
+                sample_text=doc["sample_text"],
+            )
+            for doc in documents_data
+        ]
+
+        return ListDocumentsResponse(documents=documents, total=total)
     except Exception as e:
         logger.error(e)
         raise HTTPException(status_code=500, detail="Internal Service Error")

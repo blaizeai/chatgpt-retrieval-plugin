@@ -84,3 +84,17 @@ class DataStore(ABC):
         Returns whether the operation was successful.
         """
         raise NotImplementedError
+
+    @abstractmethod
+    async def list_documents(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        filter: Optional[DocumentMetadataFilter] = None,
+    ) -> tuple[List[Dict], int]:
+        """
+        Lists all documents in the datastore with metadata.
+        Returns a tuple of (list of document info dicts, total count).
+        Each dict contains: document_id, chunk_count, metadata, sample_text
+        """
+        raise NotImplementedError

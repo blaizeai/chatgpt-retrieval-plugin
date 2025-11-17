@@ -1,6 +1,7 @@
 from models.models import (
     Document,
     DocumentMetadataFilter,
+    DocumentMetadata,
     Query,
     QueryResult,
 )
@@ -32,3 +33,22 @@ class DeleteRequest(BaseModel):
 
 class DeleteResponse(BaseModel):
     success: bool
+
+
+class DocumentInfo(BaseModel):
+    """Information about a document (aggregated from chunks)"""
+    document_id: str
+    chunk_count: int
+    metadata: DocumentMetadata
+    sample_text: Optional[str] = None  # First chunk text as preview
+
+
+class ListDocumentsRequest(BaseModel):
+    limit: Optional[int] = 100
+    offset: Optional[int] = 0
+    filter: Optional[DocumentMetadataFilter] = None
+
+
+class ListDocumentsResponse(BaseModel):
+    documents: List[DocumentInfo]
+    total: int

@@ -297,3 +297,88 @@ class QdrantDataStore(DataStore):
             field_name="created_at",
             field_schema=PayloadSchemaType.INTEGER,
         )
+
+    async def list_documents(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        filter: Optional[DocumentMetadataFilter] = None,
+    ) -> tuple[List[Dict], int]:
+        """
+        Lists all documents in the datastore with metadata.
+        Returns a tuple of (list of document info dicts, total count).
+        """
+        from collections import defaultdict
+        from typing import Dict, Any
+
+        # Build Qdrant filter
+        qdrant_filter = self._convert_metadata_filter_to_qdrant_filter(filter)
+
+        # Scroll through all points to aggregate by document_id
+        # Note: Qdrant scroll returns chunks, we need to group by document_id
+        all_points = []
+        scroll_offset = None
+
+        # First, get all points (we'll aggregate them)
+        while True:
+            scroll_result = self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=qdrant_filter,
+                limit=1000,  # Scroll in batches
+                offset=scroll_offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            points, next_offset = scroll_result
+
+            if not points:
+                break
+
+            all_points.extend(points)
+
+            if next_offset is None:
+                break
+            scroll_offset = next_offset
+
+        # Group chunks by document_id
+        documents_map: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+            "chunks": [],
+            "metadata": None,
+        })
+
+        for point in all_points:
+            payload = point.payload or {}
+            metadata_dict = payload.get("metadata", {})
+            doc_id = metadata_dict.get("document_id")
+
+            if not doc_id:
+                continue
+
+            documents_map[doc_id]["chunks"].append({
+                "id": payload.get("id"),
+                "text": payload.get("text", ""),
+            })
+
+            # Store metadata (same for all chunks of a document)
+            if documents_map[doc_id]["metadata"] is None:
+                documents_map[doc_id]["metadata"] = metadata_dict
+
+        # Convert to list and sort by document_id for consistent ordering
+        documents_list = []
+        for doc_id, doc_data in sorted(documents_map.items()):
+            chunks = doc_data["chunks"]
+            metadata = doc_data["metadata"] or {}
+
+            documents_list.append({
+                "document_id": doc_id,
+                "chunk_count": len(chunks),
+                "metadata": metadata,
+                "sample_text": chunks[0]["text"][:200] if chunks else None,
+            })
+
+        total = len(documents_list)
+
+        # Apply offset and limit for pagination
+        paginated_documents = documents_list[offset:offset + limit]
+
+        return paginated_documents, total
