@@ -4,6 +4,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Depends, Body, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from services.rerank import rerank  # ← BGE Reranker (FlagEmbedding)
@@ -100,6 +101,17 @@ def _maybe_rerank(blocks: List[Any]) -> List[Any]:
 
 
 app = FastAPI(dependencies=[Depends(validate_token)])
+
+# --- CORS Middleware ---
+# Permet les requêtes depuis le frontend Tauri/Electron
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # En production, spécifier les origines exactes
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.mount("/.well-known", StaticFiles(directory=".well-known"), name="static")
 
 # Sub-app pour exposer uniquement /sub/openapi.json

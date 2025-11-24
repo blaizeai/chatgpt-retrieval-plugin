@@ -16,7 +16,7 @@ services:
       - DATASTORE=qdrant
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_DISTANCE=Cosine
-      - BEARER_TOKEN=${RAG_BEARER_TOKEN:-dev-secret}
+      - BEARER_TOKEN=98c868fdeecb25e108afe958b9186b97cf15b850526def2f90accd746220e773
       # --- embeddings ---
       - EMBEDDING_PROVIDER=bge
       - EMBEDDING_MODEL=BAAI/bge-m3

@@ -84,23 +84,27 @@ class QdrantDataStore(DataStore):
         """
         Takes in a list of queries with embeddings and filters and returns a list of query results with matching document chunks and scores.
         """
-        search_requests = [
-            self._convert_query_to_search_request(query) for query in queries
-        ]
-        results = self.client.search_batch(
-            collection_name=self.collection_name,
-            requests=search_requests,
-        )
-        return [
-            QueryResult(
-                query=query.query,
-                results=[
-                    self._convert_scored_point_to_document_chunk_with_score(point)
-                    for point in result
-                ],
+        results = []
+        for query in queries:
+            # qdrant-client >= 1.7.0 uses query_points instead of search
+            search_result = self.client.query_points(
+                collection_name=self.collection_name,
+                query=query.embedding,
+                query_filter=self._convert_metadata_filter_to_qdrant_filter(query.filter),
+                limit=query.top_k,
+                with_payload=True,
+                with_vectors=False,
             )
-            for query, result in zip(queries, results)
-        ]
+            results.append(
+                QueryResult(
+                    query=query.query,
+                    results=[
+                        self._convert_scored_point_to_document_chunk_with_score(point)
+                        for point in search_result.points
+                    ],
+                )
+            )
+        return results
 
     async def delete(
         self,
