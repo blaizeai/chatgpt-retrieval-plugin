@@ -116,29 +116,34 @@ class ChromaDataStore(DataStore):
         if query_filter.source:
             output["source"] = query_filter.source.value
         if query_filter.start_date and query_filter.end_date:
+            # Handle 'Z' suffix (UTC timezone) which fromisoformat doesn't support before Python 3.11
+            start_date_str = query_filter.start_date.replace('Z', '+00:00')
+            end_date_str = query_filter.end_date.replace('Z', '+00:00')
             output["$and"] = [
                 {
                     "created_at": {
                         "$gte": int(
-                            datetime.fromisoformat(query_filter.start_date).timestamp()
+                            datetime.fromisoformat(start_date_str).timestamp()
                         )
                     }
                 },
                 {
                     "created_at": {
                         "$lte": int(
-                            datetime.fromisoformat(query_filter.end_date).timestamp()
+                            datetime.fromisoformat(end_date_str).timestamp()
                         )
                     }
                 },
             ]
         elif query_filter.start_date:
+            start_date_str = query_filter.start_date.replace('Z', '+00:00')
             output["created_at"] = {
-                "$gte": int(datetime.fromisoformat(query_filter.start_date).timestamp())
+                "$gte": int(datetime.fromisoformat(start_date_str).timestamp())
             }
         elif query_filter.end_date:
+            end_date_str = query_filter.end_date.replace('Z', '+00:00')
             output["created_at"] = {
-                "$lte": int(datetime.fromisoformat(query_filter.end_date).timestamp())
+                "$lte": int(datetime.fromisoformat(end_date_str).timestamp())
             }
 
         return output
@@ -152,13 +157,19 @@ class ChromaDataStore(DataStore):
         if metadata.url:
             stored_metadata["url"] = metadata.url
         if metadata.created_at:
+            # Handle 'Z' suffix (UTC timezone) which fromisoformat doesn't support before Python 3.11
+            created_at_str = metadata.created_at.replace('Z', '+00:00')
             stored_metadata["created_at"] = int(
-                datetime.fromisoformat(metadata.created_at).timestamp()
+                datetime.fromisoformat(created_at_str).timestamp()
             )
         if metadata.author:
             stored_metadata["author"] = metadata.author
         if metadata.document_id:
             stored_metadata["document_id"] = metadata.document_id
+        if metadata.filename:
+            stored_metadata["filename"] = metadata.filename
+        if metadata.filesize:
+            stored_metadata["filesize"] = metadata.filesize
 
         return stored_metadata
 
@@ -172,6 +183,8 @@ class ChromaDataStore(DataStore):
             else None,
             author=metadata.get("author", None),
             document_id=metadata.get("document_id", None),
+            filename=metadata.get("filename", None),
+            filesize=metadata.get("filesize", None),
         )
 
     async def _query(self, queries: List[QueryWithEmbedding]) -> List[QueryResult]:
@@ -248,3 +261,99 @@ class ChromaDataStore(DataStore):
 
         self._collection.delete(where=where_clause)
         return True
+
+    async def list_documents(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        filter: Optional[DocumentMetadataFilter] = None,
+    ) -> tuple[List[Dict], int]:
+        """
+        Lists all documents in the datastore with metadata.
+        Returns a tuple of (list of document info dicts, total count).
+        """
+        from collections import defaultdict
+        from typing import Dict, Any
+
+        # Get all documents from the collection
+        # Chroma get() returns all documents if no filters
+        where_clause = self._where_from_query_filter(filter) if filter else {}
+
+        try:
+            result = self._collection.get(
+                where=where_clause if where_clause else None,
+                include=["documents", "metadatas"],
+            )
+        except Exception:
+            # If collection is empty or error, return empty list
+            return [], 0
+
+        ids = result.get("ids", [])
+        documents = result.get("documents", [])
+        metadatas = result.get("metadatas", [])
+
+        # Group chunks by document_id
+        documents_map: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+            "chunks": [],
+            "metadata": None,
+        })
+
+        for id_, text, metadata in zip(ids, documents, metadatas):
+            doc_id = metadata.get("document_id") if metadata else None
+
+            if not doc_id:
+                continue
+
+            documents_map[doc_id]["chunks"].append({
+                "id": id_,
+                "text": text or "",
+            })
+
+            # Store metadata (same for all chunks of a document)
+            if documents_map[doc_id]["metadata"] is None:
+                documents_map[doc_id]["metadata"] = metadata
+
+        # Convert to list and sort by document_id for consistent ordering
+        documents_list = []
+        for doc_id, doc_data in sorted(documents_map.items()):
+            chunks = doc_data["chunks"]
+            metadata = doc_data["metadata"] or {}
+
+            # Convert stored metadata back to original format
+            processed_metadata = {}
+            if "source" in metadata:
+                processed_metadata["source"] = metadata["source"]
+            if "source_id" in metadata:
+                processed_metadata["source_id"] = metadata["source_id"]
+            if "url" in metadata:
+                processed_metadata["url"] = metadata["url"]
+            if "created_at" in metadata:
+                # Convert timestamp back to ISO format
+                try:
+                    processed_metadata["created_at"] = datetime.fromtimestamp(
+                        metadata["created_at"]
+                    ).isoformat() + "Z"
+                except (ValueError, TypeError):
+                    processed_metadata["created_at"] = None
+            if "author" in metadata:
+                processed_metadata["author"] = metadata["author"]
+            if "document_id" in metadata:
+                processed_metadata["document_id"] = metadata["document_id"]
+            if "filename" in metadata:
+                processed_metadata["filename"] = metadata["filename"]
+            if "filesize" in metadata:
+                processed_metadata["filesize"] = metadata["filesize"]
+
+            documents_list.append({
+                "document_id": doc_id,
+                "chunk_count": len(chunks),
+                "metadata": processed_metadata,
+                "sample_text": chunks[0]["text"][:200] if chunks else None,
+            })
+
+        total = len(documents_list)
+
+        # Apply offset and limit for pagination
+        paginated_documents = documents_list[offset:offset + limit]
+
+        return paginated_documents, total

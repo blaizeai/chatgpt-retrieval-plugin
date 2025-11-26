@@ -1,8 +1,8 @@
 # services/openai.py
 """
 Wrapper unifié d'embeddings (compat 2 usages) :
-- EMBEDDING_PROVIDER=openai  -> embeddings via API OpenAI
-- EMBEDDING_PROVIDER=bge     -> embeddings locaux via BGE-M3 (FlagEmbedding)
+- EMBEDDING_SERVICE=openai  -> embeddings via API OpenAI
+- EMBEDDING_SERVICE=bge     -> embeddings locaux via BGE-M3 (FlagEmbedding)
 
 Expose :
 - get_embeddings() -> objet client avec .embed_documents(List[str]) et .embed_query(str)
@@ -14,7 +14,7 @@ Expose :
 import os
 from typing import List, Optional, Union
 
-_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "openai").lower()
+_PROVIDER = os.getenv("EMBEDDING_SERVICE", "bge").lower()
 
 
 class _EmbeddingsClient:
@@ -32,7 +32,7 @@ class _EmbeddingsClient:
                 from openai import OpenAI  # type: ignore
             except Exception as e:
                 raise RuntimeError(
-                    "EMBEDDING_PROVIDER=openai mais le SDK 'openai' n'est pas installé. "
+                    "EMBEDDING_SERVICE=openai mais le SDK 'openai' n'est pas installé. "
                     "Installe : pip install openai"
                 ) from e
             self._client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))

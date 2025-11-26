@@ -6,6 +6,10 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
+from dotenv import load_dotenv
+
+# Load .env file automatically
+load_dotenv()
 
 from services.rerank import rerank  # ← BGE Reranker (FlagEmbedding)
 
@@ -29,10 +33,18 @@ bearer_scheme = HTTPBearer()
 BEARER_TOKEN = os.environ.get("BEARER_TOKEN")
 assert BEARER_TOKEN is not None
 
+# Support multiple tokens separated by commas
+BEARER_TOKENS = [token.strip() for token in BEARER_TOKEN.split(",") if token.strip()]
+
 
 def validate_token(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
-    if credentials.scheme != "Bearer" or credentials.credentials != BEARER_TOKEN:
+    if credentials.scheme != "Bearer":
+        raise HTTPException(status_code=401, detail="Invalid authentication scheme")
+
+    # Check if token is in the allowed list
+    if credentials.credentials not in BEARER_TOKENS:
         raise HTTPException(status_code=401, detail="Invalid or missing token")
+
     return credentials
 
 
