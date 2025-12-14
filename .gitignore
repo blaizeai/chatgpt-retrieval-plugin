@@ -143,3 +143,8 @@ dmypy.json
 
 qdrant_stora*
 qdrant_storage/
+
+# Vector database storage directories (generated data)
+openai/
+chroma/
+chroma_storage/

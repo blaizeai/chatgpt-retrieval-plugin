@@ -162,7 +162,7 @@ Each provider implements the `DataStore` interface:
 - Preserves metadata across chunks
 
 **File Parsing** (`services/file.py`):
-- PDF: PyPDF2
+- PDF: pdfplumber (better UTF-8 and accent support than PyPDF2)
 - DOCX: docx2txt
 - PPTX: python-pptx
 - TXT/MD: Direct text extraction

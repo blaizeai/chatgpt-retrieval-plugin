@@ -4,6 +4,7 @@ from typing import Optional
 from fastapi import UploadFile
 import mimetypes
 from PyPDF2 import PdfReader
+import pdfplumber
 import docx2txt
 import csv
 import pptx
@@ -47,9 +48,15 @@ def extract_text_from_filepath(filepath: str, mimetype: Optional[str] = None) ->
 
 def extract_text_from_file(file: BufferedReader, mimetype: str) -> str:
     if mimetype == "application/pdf":
-        # Extract text from pdf using PyPDF2
-        reader = PdfReader(file)
-        extracted_text = " ".join([page.extract_text() for page in reader.pages])
+        # Extract text from pdf using pdfplumber (better UTF-8 and accent support)
+        extracted_text = ""
+        with pdfplumber.open(file) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    extracted_text += page_text + "\n"
+        # Normalize whitespace
+        extracted_text = " ".join(extracted_text.split())
     elif mimetype == "text/plain" or mimetype == "text/markdown":
         # Read text from plain text file
         extracted_text = file.read().decode("utf-8")
